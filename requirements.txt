@@ -1,0 +1,10 @@
+streamlit>=1.37.0
+transformers>=4.43.0
+torch>=2.2.0
+Pillow
+easyocr
+numpy
+opencv-python-headless
+sentencepiece
+accelerate
+python-pptx
