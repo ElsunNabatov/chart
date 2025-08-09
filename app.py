@@ -21,10 +21,25 @@ def clone_repo():
             raise RuntimeError(result.stderr)
     return str(REPO_DIR.resolve())
 
-def build_base_command(task:str, image_path:str, ckpt_dir:str, extra_args:str=""):
-    """We call ChartVLM/inference.py via subprocess.
-    Adjust flags according to the repo README if names change.
+def ensure_ckpts(ckpt_mode, local_dir, hf_repo_id):
+    """Return a directory path that contains the checkpoints.
+    - ckpt_mode: 'local' or 'download'
+    - local_dir: path provided by user
+    - hf_repo_id: e.g., 'Org/ChartVLM-base' (you can use any HF repo id)
     """
+    if ckpt_mode == "local":
+        if not local_dir or not os.path.isdir(local_dir):
+            raise FileNotFoundError("Checkpoint directory not found: " + str(local_dir))
+        return local_dir
+    else:
+        # download via huggingface_hub
+        from huggingface_hub import snapshot_download
+        cache_dir = Path(".hf_ckpts"); cache_dir.mkdir(exist_ok=True)
+        st.write(f"Downloading weights from Hugging Face repo: {hf_repo_id} ...")
+        path = snapshot_download(repo_id=hf_repo_id, local_dir=cache_dir, local_dir_use_symlinks=False, resume_download=True)
+        return path
+
+def build_base_command(task:str, image_path:str, ckpt_dir:str, extra_args:str=""):
     cmd = [
         sys.executable, "inference.py",
         "--task", task,
@@ -36,7 +51,7 @@ def build_base_command(task:str, image_path:str, ckpt_dir:str, extra_args:str=""
     return cmd
 
 def run_inference(task, image_path, ckpt_dir, extra_args):
-    repo = clone_repo()
+    clone_repo()
     with st.status("Running ChartVLM inference...", expanded=True) as status:
         cwd = str(REPO_DIR)
         cmd = build_base_command(task, image_path, ckpt_dir, extra_args)
@@ -47,13 +62,19 @@ def run_inference(task, image_path, ckpt_dir, extra_args):
             st.error(proc.stderr)
             raise RuntimeError("Inference failed")
         status.update(label="Done", state="complete")
-        # naive parse: look for last non-empty line as result
         lines = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
         return lines[-1] if lines else proc.stdout
 
-st.sidebar.header("Model checkpoints")
-st.sidebar.write("Download ChartVLM-base/large from their HF page and paste the path.")
-ckpt_dir = st.sidebar.text_input("Checkpoint directory (on disk)", value="/mount/chartvlm_ckpts")
+st.sidebar.header("Model weights")
+ckpt_mode = st.sidebar.radio("How to provide checkpoints?", ["Local path", "Download from Hugging Face"], index=0)
+
+local_dir = ""
+hf_repo_id = ""
+
+if ckpt_mode == "Local path":
+    local_dir = st.sidebar.text_input("Checkpoint directory (absolute or relative path)", value="")
+else:
+    hf_repo_id = st.sidebar.text_input("Hugging Face repo id (e.g., Org/ChartVLM-base)", value="")
 
 st.sidebar.header("Task")
 task = st.sidebar.selectbox("Choose task", ["summarize", "describe", "qa"])
@@ -65,14 +86,15 @@ if uploaded:
     img = Image.open(uploaded).convert("RGB")
     st.image(img, caption="Input chart", use_column_width=True)
 
-    # save temp image for CLI
     tmp_dir = Path("tmp_inputs"); tmp_dir.mkdir(exist_ok=True)
     tmp_img_path = tmp_dir / uploaded.name
     img.save(tmp_img_path)
 
     if st.button("Run ChartVLM"):
-        if not ckpt_dir or not os.path.exists(ckpt_dir):
-            st.error("Checkpoint directory not found. Please download the pretrained weights and set the path in the sidebar.")
+        try:
+            ckpt_dir = ensure_ckpts("local" if ckpt_mode=="Local path" else "download", local_dir, hf_repo_id)
+        except Exception as e:
+            st.error(f"Checkpoint setup failed: {e}")
         else:
             try:
                 result = run_inference(task, str(tmp_img_path), ckpt_dir, extra_args)
@@ -85,9 +107,8 @@ st.markdown("""
 ---
 
 ### Setup notes
-- This wrapper **clones the ChartVLM repo** and shells out to `inference.py`.
-- You must **download ChartVLM checkpoints** (base/large) from their Hugging Face page and point `Checkpoint directory` to that folder.
-- If CLI flags differ in your version of ChartVLM, use **Extra CLI args** to pass them through.
-- Recommended runtime: **Python 3.10 or 3.11**.
+- **Option A (Local path):** Put the downloaded ChartVLM weights in a folder and paste that path in the sidebar.
+- **Option B (Download):** Enter a Hugging Face repo id (e.g., `Org/ChartVLM-base`). The app will download into `.hf_ckpts/`.
+- This wrapper clones the ChartVLM repo and invokes `inference.py`. If CLI flags differ, pass them via **Extra CLI args**.
 
 """)
